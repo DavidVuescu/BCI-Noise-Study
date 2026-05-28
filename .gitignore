@@ -267,4 +267,7 @@ config/local_*
 .DS_Store
 Thumbs.db
 
+# === g.tec's faces ===
+# The standard 60 faces g.tec uses for their spellers at time of writing this
+assets/faces/*
 
