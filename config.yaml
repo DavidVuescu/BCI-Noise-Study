@@ -1,0 +1,37 @@
+# BCI Noise Study - Session Configuration
+
+experiment:
+  name: "bci-noise-study"
+  version: "0.1.0"
+
+device:
+  udp_host: "127.0.0.1"
+  udp_port: 1000
+  sampling_rate: 250         # Hz, Unicorn fixed
+  n_channels: 17             # 8 EEG + 3 acc + 3 gyro + battery + counter + validation
+  n_eeg_channels: 8
+  bytes_per_sample: 68       # 17 channels * 4 bytes (float32)
+
+stimulus:
+  monitor_refresh_hz: 60
+  grid_rows: 3
+  grid_cols: 3
+  target_cell: 4             # 0-indexed, middle cell
+  flash_frames: 8            # 8 frames @ 60Hz = 133.3ms
+  isi_frames: 6              # 6 frames @ 60Hz = 100ms
+  cell_size_px: 100
+  background_color: [40, 40, 40]
+  cell_color: [80, 80, 80]
+  face_dir: "assets/faces"
+
+session:
+  conditions:
+    - control
+    - chewing
+    - emi
+    - audio
+  duration_per_condition_s: 300    # 5 minutes
+  duration_control_s: 600          # 10 minutes for control (training data)
+
+output:
+  raw_dir: "data/raw"

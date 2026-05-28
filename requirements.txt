@@ -1,0 +1,7 @@
+numpy>=1.24,<2.0
+scipy>=1.10
+pygame>=2.5
+pandas>=2.0
+matplotlib>=3.7
+jupyter>=1.0
+pyyaml>=6.0
