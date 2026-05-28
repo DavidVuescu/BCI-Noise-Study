@@ -216,3 +216,54 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# === JUPYTER ===
+# Track notebooks, but not checkpoint noise
+.ipynb_checkpoints/
+
+# === RAW SIGNAL / EEG DATA ===
+# Large binary files, not suited for git
+*.edf
+*.bdf
+*.hdf5
+*.h5
+*.mat
+*.npy
+*.npz
+*.pkl
+
+# Data folders — keep these off git entirely
+data/
+raw/
+recordings/
+
+# === MODEL ARTIFACTS ===
+# Reproducible from code
+models/
+checkpoints/
+*.ckpt
+*.weights
+*.model
+
+# === OUTPUTS ===
+# Figures and results are generated, not source
+results/
+figures/
+plots/
+*.png
+*.pdf
+*.svg
+
+# === SECRETS / LOCAL CONFIG ===
+# Credentials, local paths, participant metadata
+.env
+config/local_*
+*.local.*
+
+# === MNE CACHE ===
+.mne/
+
+# === OS JUNK ===
+.DS_Store
+Thumbs.db
+
