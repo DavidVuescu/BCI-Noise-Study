@@ -146,11 +146,12 @@ def run_recording(
         condition=condition,
     )
 
-    print(f"\nFiles in {raw_dir}/")
+    subject_dir = raw_dir / f"sub-{subject_id}"
+    print(f"\nFiles in {subject_dir}/")
     stem = f"sub-{subject_id}_cond-{condition}"
     for suffix in ["eeg.npy", "acqtime.npy", "timestamps.npy",
                    "meta.json", "markers.csv", "session.json"]:
-        path = raw_dir / f"{stem}_{suffix}"
+        path = subject_dir / f"{stem}_{suffix}"
         marker = "✓" if path.exists() else "✗"
         print(f"  {marker}  {path.name}")
 

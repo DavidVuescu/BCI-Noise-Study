@@ -205,7 +205,9 @@ class Recorder:
         Returns:
             The metadata dict that was written.
         """
-        output_dir = Path(output_dir)
+        # Files go into a per-subject subfolder: data/raw/sub-<id>/
+        # This now matches the BIDS-style layout used by analysis/loader.py.
+        output_dir = Path(output_dir) / f"sub-{subject_id}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Truncate to actual data. The buffer is allocated generously; we only

@@ -379,7 +379,8 @@ def run_session(
               "Nothing saved.")
         return meta
 
-    output_dir = Path(output_dir)
+    # Files go into a per-subject subfolder: data/raw/sub-<id>/
+    output_dir = Path(output_dir) / f"sub-{subject_id}"
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = f"sub-{subject_id}_cond-{condition}"
     with open(output_dir / f"{stem}_markers.csv", "w", newline="") as f:
