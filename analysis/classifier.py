@@ -23,6 +23,8 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix
 from sklearn.model_selection import train_test_split
 
+import statsmodels.api as sm
+
 
 # ---- Pre-registered parameters ----------------------------------------
 # §5: 50 samples per epoch (1 per 20 ms over the 1000 ms window).
@@ -32,6 +34,14 @@ TRAIN_FRACTION = 0.70
 
 DERIVED_PIPELINE = "classifier-v1"
 PREPROCESSING_PIPELINE = "preprocessing-v1"
+
+
+
+# ---- SWLDA parameters (Krusienski et al. 2008, canonical for P300 spellers) ---
+# Locked before any data is collected. Changing requires deviation logging.
+SWLDA_P_ENTER = 0.1     # feature added if conditional p-value < this
+SWLDA_P_REMOVE = 0.15   # feature removed if conditional p-value > this
+SWLDA_MAX_FEATURES = 60 # hard cap on selected feature count
 
 
 @dataclass
@@ -73,6 +83,93 @@ def _extract_features(epochs: mne.Epochs, target_sfreq: float) -> tuple[np.ndarr
     X = data.reshape(n_epochs, n_channels * n_samples).astype(np.float32)
     y = (epochs_ds.metadata["is_target"].values).astype(int)
     return X, y
+
+
+def _swlda_select_features(
+    X: np.ndarray,
+    y: np.ndarray,
+    p_enter: float = SWLDA_P_ENTER,
+    p_remove: float = SWLDA_P_REMOVE,
+    max_features: int = SWLDA_MAX_FEATURES,
+    verbose: bool = False,
+) -> list[int]:
+    """Stepwise feature selection for SWLDA, per Krusienski et al. 2008.
+
+    Uses OLS regression with the binary label as the dependent variable.
+    Forward selection by best conditional p-value, then backward elimination
+    of features whose conditional p-value drifts above p_remove after other
+    features are added.
+
+    Returns:
+        Sorted list of selected feature column indices.
+    """
+    n_samples, n_features = X.shape
+    selected: list[int] = []
+    available = list(range(n_features))
+
+    # Center y to mimic the regression-on-residuals setup; OLS handles this
+    # but explicit centering makes the linear-algebra equivalent clearer.
+    y_float = y.astype(float)
+
+    iteration = 0
+    max_iterations = max_features * 4  # safety bound, shouldn't be hit
+    while iteration < max_iterations:
+        iteration += 1
+
+        # ---- Forward step: find best candidate to add --------------------
+        best_pval = 1.0
+        best_feature = None
+
+        if len(selected) < max_features:
+            for j in available:
+                trial = selected + [j]
+                X_trial = sm.add_constant(X[:, trial], has_constant="add")
+                try:
+                    model = sm.OLS(y_float, X_trial).fit()
+                    # p-value of the newly-added feature is the last coefficient
+                    # after the constant; coefficient index = len(trial)
+                    pval = model.pvalues[-1]
+                except Exception:
+                    continue
+                if pval < best_pval:
+                    best_pval = pval
+                    best_feature = j
+
+        added = False
+        if best_feature is not None and best_pval < p_enter:
+            selected.append(best_feature)
+            available.remove(best_feature)
+            added = True
+            if verbose:
+                print(f"  + add feat {best_feature} (p={best_pval:.4f}), "
+                      f"selected={len(selected)}")
+
+        # ---- Backward step: remove any feature whose p-value drifted up --
+        removed = False
+        if len(selected) > 1:
+            X_full = sm.add_constant(X[:, selected], has_constant="add")
+            try:
+                model = sm.OLS(y_float, X_full).fit()
+                # Skip the constant (index 0); check selected features
+                pvals_selected = model.pvalues[1:]
+                worst_idx = int(np.argmax(pvals_selected))
+                worst_pval = float(pvals_selected[worst_idx])
+                if worst_pval > p_remove:
+                    feat_to_remove = selected[worst_idx]
+                    selected.pop(worst_idx)
+                    available.append(feat_to_remove)
+                    removed = True
+                    if verbose:
+                        print(f"  - remove feat {feat_to_remove} "
+                              f"(p={worst_pval:.4f}), selected={len(selected)}")
+            except Exception:
+                pass
+
+        # Stop when neither forward nor backward step changed anything
+        if not added and not removed:
+            break
+
+    return sorted(selected)
 
 
 def _evaluate(clf, X_test: np.ndarray, y_test: np.ndarray) -> dict:
@@ -146,14 +243,31 @@ def train_and_evaluate(
     X_train = X_train[train_idx]
     y_train = y_train[train_idx]
 
+    selected_features: list[int] | None = None
     if classifier_type == "lda":
         clf = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+        clf.fit(X_train, y_train)
     elif classifier_type == "swlda":
-        raise NotImplementedError("SWLDA added after LDA scaffold validates")
+        # Step 1: stepwise feature selection on training data only
+        selected_features = _swlda_select_features(
+            X_train, y_train,
+            p_enter=SWLDA_P_ENTER,
+            p_remove=SWLDA_P_REMOVE,
+            max_features=SWLDA_MAX_FEATURES,
+            verbose=True,
+        )
+        if len(selected_features) == 0:
+            raise RuntimeError("SWLDA selected zero features. "
+                               "Signal is too weak for this configuration.")
+        print(f"  SWLDA selected {len(selected_features)} of "
+              f"{X_train.shape[1]} features")
+        # Step 2: fit LDA on the selected features only
+        X_train = X_train[:, selected_features]
+        X_test = X_test[:, selected_features]
+        clf = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+        clf.fit(X_train, y_train)
     else:
         raise ValueError(f"Unknown classifier_type: {classifier_type}")
-
-    clf.fit(X_train, y_train)
 
     result = ClassifierResult(
         subject_id=subject_id,
@@ -168,6 +282,10 @@ def train_and_evaluate(
             "shrinkage": "auto",
             "solver": "lsqr",
             "random_state": random_state,
+            "swlda_p_enter": SWLDA_P_ENTER if classifier_type == "swlda" else None,
+            "swlda_p_remove": SWLDA_P_REMOVE if classifier_type == "swlda" else None,
+            "swlda_max_features": SWLDA_MAX_FEATURES if classifier_type == "swlda" else None,
+            "swlda_selected_features": selected_features,
         },
     )
 
@@ -177,6 +295,8 @@ def train_and_evaluate(
     for cond in ["chewing", "emi", "acoustic"]:
         epochs = _load_epochs(subject_id, cond, derived_root)
         X, y = _extract_features(epochs, target_sfreq=DOWNSAMPLED_HZ)
+        if selected_features is not None:
+            X = X[:, selected_features]
         result.per_condition[cond] = _evaluate(clf, X, y)
 
     # ---- Persist -------------------------------------------------------

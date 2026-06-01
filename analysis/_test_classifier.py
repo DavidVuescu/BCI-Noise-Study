@@ -12,7 +12,7 @@ def main():
     print(f"  subject: {subject}")
     print(f"  classifier: LDA with shrinkage=auto (scaffold)")
 
-    result = train_and_evaluate(subject_id=subject, classifier_type="lda")
+    result = train_and_evaluate(subject_id=subject, classifier_type="swlda")
 
     print(f"\n  Features per epoch:  {result.n_features}")
     print(f"  Train epochs:        {result.n_train_epochs}")
@@ -30,6 +30,10 @@ def main():
               f"{metrics['true_nontarget_rate']*100:>11.1f}% "
               f"{metrics['n_target']:>7} "
               f"{metrics['n_nontarget']:>9}")
+
+        cm = metrics['confusion_matrix']
+        print(f"    Raw CM -> True Pos: {cm['TP']:<4} False Neg: {cm['FN']:<4} | "
+              f"True Neg: {cm['TN']:<4} False Pos: {cm['FP']:<4}")
 
     print(f"\n=== INTERPRETATION ===")
     ctrl_acc = result.per_condition["control_heldout"]["balanced_accuracy"]
