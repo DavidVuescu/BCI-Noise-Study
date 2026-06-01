@@ -16,13 +16,17 @@ stimulus:
   monitor_refresh_hz: 60
   grid_rows: 3
   grid_cols: 3
-  target_cell: 4             # 0-indexed, middle cell
+  target_cell: 4             # 0-indexed, middle cell     # used only for practice now
   flash_frames: 8            # 8 frames @ 60Hz = 133.3ms
   isi_frames: 6              # 6 frames @ 60Hz = 100ms
   cell_size_px: 100
   background_color: [40, 40, 40]
   cell_color: [80, 80, 80]
   face_dir: "assets/faces"
+  sub_blocks:
+    target_cells: [ 0, 4, 8 ]      # the three target cells used study-wide (diagonal)
+    rest_min_s: 5                # minimum rest screen duration before SPACE accepted
+    rest_max_s: 10               # informational; rest ends on SPACE after rest_min_s
 
 session:
   conditions:
