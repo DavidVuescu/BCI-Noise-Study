@@ -42,13 +42,18 @@ bci-noise-study/
 │   ├── recorder.py                   # threaded UDP receiver for Unicorn UDP Interface
 │   ├── sequence.py                   # 3-sub-block flash sequence generator
 │   ├── stimulus.py                   # pygame paradigm runner with rest gates & count prompts
-│   └── session.py                    # orchestrator: pre-roll + recorder + stimulus + post-roll
+│   └── session.py                    # orchestrator: protocol-aware runner + single-recording mode
 │
 ├── analysis/                         # ANALYSIS-SIDE code (runs offline)
 │   ├── loader.py                     # Recording dataclass; clock-drift correction via linear fit
 │   ├── preprocess.py                 # filter, epoch, baseline-correct, reject → MNE Epochs
-│   ├── classifier.py                 # LDA scaffold + SWLDA stepwise feature selection
+│   ├── classifier.py                 # SWLDA stepwise feature selection + LDA
+│   ├── plots.py                      # all standard figures (ERP, PSD, confusion matrix, summary)
 │   └── _check_signal.py              # text-output ERP diagnostic
+│
+├── notebooks/
+│   ├── 01_pipeline.ipynb             # single-subject workhorse: load → preprocess → classify → plot
+│   └── 02_group_results.ipynb        # group-level aggregation across all processed subjects
 │
 ├── protocol/
 │   ├── order_assignments/
@@ -106,15 +111,25 @@ pip install -r requirements.txt
 ```
 3. Confirm: 250 Hz packet rate, counter increments cleanly by 1, posterior channels (PO7/Oz/PO8) below 30 µV stdev
 
-### Record one condition
+### Record a full session (all 4 conditions in protocol order)
 
 ```bash
-python -m src.session --subject 01 --condition control --duration 600 --targets 4,8,0
+python -m src.session --subject 01
 ```
 
-The `--targets` permutation is read from `protocol/order_assignments/order_assignments.csv` per subject and condition. **Never type a permutation from memory.** The CSV is the audit trail.
+This reads `protocol/order_assignments/order_assignments.csv`, runs the 4 recordings in the assigned order with ENTER gates between them, and automatically sets the correct target-cell permutation and duration (control = 600 s, all others = 300 s) for each condition. No manual permutation lookup required.
 
-Outputs land in `data/raw/sub-01/` as six files:
+To resume after a crash mid-session:
+```bash
+python -m src.session --subject 01 --start-from 3
+```
+
+To record a single condition (targets and duration still auto-resolved from the CSV):
+```bash
+python -m src.session --subject 01 --condition control
+```
+
+Outputs land in `data/raw/sub-01/` as six files per condition:
 `*_eeg.npy`, `*_acqtime.npy`, `*_timestamps.npy`, `*_meta.json`, `*_markers.csv`, `*_session.json`.
 
 ### EMI condition
@@ -132,6 +147,18 @@ iperf3 -c <PC_IP> -u -b 200M -t 360
 Confirm UniFi shows 2.4 GHz channel 6 at 40 MHz width with elevated channel utilization. Then run the recording.
 
 ### Analysis
+
+The primary analysis interface is Jupyter notebooks:
+
+```bash
+jupyter lab
+```
+
+Open `notebooks/01_pipeline.ipynb`, set `SUBJECT_ID` at the top, and run all cells. It walks through load → PSD → preprocess all four conditions → ERP → classifier → confusion matrices → one-page summary figure saved to `data/derived/`. Run this the day each participant comes in.
+
+Open `notebooks/02_group_results.ipynb` periodically as subjects accumulate. It auto-discovers all saved `_results.json` files and produces group-level accuracy plots, a subject × condition table, and sensitivity/specificity breakdowns.
+
+For headless verification of the pipeline without a notebook:
 
 ```bash
 python -m analysis._test_loader              # load + verify alignment
