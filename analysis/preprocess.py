@@ -6,8 +6,8 @@ specified in pre-registration §5 and §6, in that order. Returns an MNE
 Epochs object and a rejection log; optionally persists both to disk.
 
 Output paths:
-    data/derived/preprocessing-v1/sub-<id>/sub-<id>_cond-<cond>_epo.fif
-    data/derived/preprocessing-v1/sub-<id>/sub-<id>_cond-<cond>_rejection.json
+    data/derived/preprocessing-v2/sub-<id>/sub-<id>_cond-<cond>_epo.fif
+    data/derived/preprocessing-v2/sub-<id>/sub-<id>_cond-<cond>_rejection.json
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ BOUNDARY_LEAD_S = 2.0           # reject epochs within first 2s of sub-block
 BOUNDARY_TAIL_S = 1.0           # reject epochs within last 1s of sub-block
 
 # Derived dir layout matches the BIDS-shadow convention discussed earlier.
-DERIVED_PIPELINE = "preprocessing-v1"
+DERIVED_PIPELINE = "preprocessing-v2"
 
 
 @dataclass

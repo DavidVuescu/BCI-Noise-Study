@@ -7,8 +7,8 @@ selection wrapper) is added as a separate function once the scaffold is
 trusted; per pre-reg §5, SWLDA is the final classifier.
 
 Output paths:
-    data/derived/classifier-v1/sub-<id>/sub-<id>_model.pkl
-    data/derived/classifier-v1/sub-<id>/sub-<id>_results.json
+    data/derived/classifier-v2/sub-<id>/sub-<id>_model.pkl
+    data/derived/classifier-v2/sub-<id>/sub-<id>_results.json
 """
 from __future__ import annotations
 
@@ -32,8 +32,8 @@ DOWNSAMPLED_HZ = 50
 # §5: 70/30 train/test split on control for the within-condition ceiling.
 TRAIN_FRACTION = 0.70
 
-DERIVED_PIPELINE = "classifier-v1"
-PREPROCESSING_PIPELINE = "preprocessing-v1"
+DERIVED_PIPELINE = "classifier-v2"
+PREPROCESSING_PIPELINE = "preprocessing-v2"
 
 
 
