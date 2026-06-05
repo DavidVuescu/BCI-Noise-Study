@@ -25,3 +25,13 @@ All deviations are reported here, regardless of their perceived impact on the st
 * **Impact:** The RF environment is characterized at the session baseline rather than per-recording. Because all four condition recordings are conducted back-to-back in the identical physical environment over a short duration, the ambient RF baseline remains adequately documented without degrading the subject experience or introducing unnecessary fatigue. 
 
 ---
+
+### 2026-06-06: Per-Condition Pre-Recording Diagnostic
+**Phase:** Data Acquisition (Recording Protocol)
+**Status:** Active clarification during main data collection (retroactive to sub-01).
+
+* **Deviation:** The protocol (§4, exclusion criterion 1) specifies a single "pre-session diagnostic" for resting-baseline electrode quality. In practice, the 10-second diagnostic was administered before *each* condition recording (control, chewing, EMI, acoustic), not once per session. When a channel exceeded the 60 µV flag threshold, electrodes were refitted — the recovery procedure explicitly named in §4 criterion 1 — and the diagnostic re-run until no channel was flagged, prior to beginning that condition's recording.
+* **Motivation:** The Unicorn's dry/wet electrodes are prone to contact degradation across a multi-recording session. Re-seating to a clean baseline before each condition removes intra-session electrode drift as a confound, ensuring that measured condition effects are attributable to the noise manipulation rather than to progressive contact decay correlated with condition order. This is more conservative than the pre-registered single-gate procedure.
+* **Impact:** No subject was excluded on grounds that would not also have triggered the pre-session criterion; the per-condition application only ever recovered electrodes prior to recording, never altered an exclusion decision. The procedure strengthens the primary (P300) and secondary (N170) analyses by equalizing baseline contact quality across conditions. One consequence affects the *exploratory* per-condition raw signal-quality metric (§5): because contact is normalized before each recording, per-condition stdev reflects condition effect on a re-seated baseline rather than cumulative real-world drift. As this measure is exploratory and descriptive with no inferential weight, interpretation is unaffected. Diagnostic outputs were captured per run but not labeled by condition/attempt for sub-01 through sub-07; a labeled logging format is adopted from the point of this entry forward.
+
+---
