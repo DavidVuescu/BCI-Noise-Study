@@ -263,7 +263,7 @@ def plot_subject_summary(
 
 
 def load_all_results(derived_root: str | Path = "data/derived") -> list[dict]:
-    """Scan data/derived/classifier-v1 and load every _results.json found.
+    """Scan data/derived/classifier-v2 and load every _results.json found.
 
     Returns a list of result dicts, one per processed subject.
     """
@@ -274,3 +274,173 @@ def load_all_results(derived_root: str | Path = "data/derived") -> list[dict]:
         with open(path) as f:
             results.append(json.load(f))
     return results
+
+
+# ---------------------------------------------------------------------------
+# N170 plots
+# ---------------------------------------------------------------------------
+
+# Window and channel constants mirrored from n170.py to avoid circular imports
+_N170_CHANNELS = ["PO7", "Oz", "PO8"]
+_N170_TMIN_MS = 130.0
+_N170_TMAX_MS = 200.0
+
+
+def plot_n170_erp_overlay(
+    n170_result: dict,
+    ax: plt.Axes | None = None,
+) -> plt.Figure:
+    """Per-condition posterior ERP overlay for one subject.
+
+    Plots the grand-average waveform at the mean of PO7/Oz/PO8 for each
+    condition, highlighting the pre-registered N170 window (130–200 ms).
+
+    Args:
+        n170_result: dict returned by run_n170_subject() or loaded from JSON.
+    """
+    fig, ax = (plt.subplots(figsize=(9, 4), layout="constrained") if ax is None
+               else (ax.get_figure(), ax))
+
+    for cond, cdata in n170_result["per_condition"].items():
+        times_ms = np.array(cdata["evoked_times_s"]) * 1000
+        channels = cdata["evoked_per_channel_uv"]
+        # Mean across the three posterior channels
+        waveform = np.mean([channels[ch] for ch in _N170_CHANNELS if ch in channels], axis=0)
+        color = CONDITION_COLORS.get(cond, "#888888")
+        ax.plot(times_ms, waveform, color=color, linewidth=1.8, label=cond)
+
+    ax.axvspan(_N170_TMIN_MS, _N170_TMAX_MS, alpha=0.12, color="gold",
+               label=f"N170 window ({_N170_TMIN_MS:.0f}–{_N170_TMAX_MS:.0f} ms)")
+    ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.axhline(0, color="black", linewidth=0.5)
+
+    subject = n170_result.get("subject_id", "?")
+    ax.set_title(f"N170 — sub-{subject}  posterior mean (PO7/Oz/PO8)")
+    ax.set_xlabel("Time (ms)")
+    ax.set_ylabel("Amplitude (µV)")
+    ax.legend(fontsize=9)
+    return fig
+
+
+def plot_n170_amplitude_bar(
+    n170_result: dict,
+    ax: plt.Axes | None = None,
+) -> plt.Figure:
+    """Bar chart of N170 amplitude per condition for one subject.
+
+    More negative = larger N170 (expected). Noise making amplitude less
+    negative is the predicted direction.
+    """
+    fig, ax = (plt.subplots(figsize=(6, 4), layout="constrained") if ax is None
+               else (ax.get_figure(), ax))
+
+    from analysis.n170 import CONDITIONS  # local import to avoid circular dep
+    conds = [c for c in CONDITIONS if c in n170_result["per_condition"]]
+    amps = [n170_result["per_condition"][c]["n170_amplitude_uv"] for c in conds]
+    colors = [CONDITION_COLORS.get(c, "#888888") for c in conds]
+
+    bars = ax.bar(conds, amps, color=colors, edgecolor="white")
+    ax.axhline(0, color="black", linewidth=0.5)
+
+    for bar, amp in zip(bars, amps):
+        va = "bottom" if amp >= 0 else "top"
+        offset = 0.05 if amp >= 0 else -0.05
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                amp + offset, f"{amp:.2f}", ha="center", va=va, fontsize=9)
+
+    subject = n170_result.get("subject_id", "?")
+    ax.set_title(f"N170 amplitude — sub-{subject}")
+    ax.set_ylabel("Mean amplitude in 130–200 ms (µV)")
+    return fig
+
+
+def plot_n170_group_amplitude(
+    all_results: list[dict],
+    ax: plt.Axes | None = None,
+) -> plt.Figure:
+    """Group N170 amplitude: mean ± SD bars with individual subject dots.
+
+    Args:
+        all_results: list of dicts from load_all_n170_results().
+    """
+    fig, ax = (plt.subplots(figsize=(7, 4), layout="constrained") if ax is None
+               else (ax.get_figure(), ax))
+
+    from analysis.n170 import CONDITIONS
+
+    cond_data: dict[str, list[float]] = {c: [] for c in CONDITIONS}
+    for r in all_results:
+        for cond in CONDITIONS:
+            if cond in r["per_condition"]:
+                cond_data[cond].append(r["per_condition"][cond]["n170_amplitude_uv"])
+
+    conds = [c for c in CONDITIONS if cond_data[c]]
+    means = [float(np.mean(cond_data[c])) for c in conds]
+    sds = [float(np.std(cond_data[c], ddof=1)) for c in conds]
+    colors = [CONDITION_COLORS.get(c, "#888888") for c in conds]
+
+    ax.bar(conds, means, yerr=sds, capsize=5, color=colors, edgecolor="white")
+
+    for i, cond in enumerate(conds):
+        vals = cond_data[cond]
+        ax.scatter([i] * len(vals), vals, color="black", s=20, zorder=5, alpha=0.6)
+
+    ax.axhline(0, color="black", linewidth=0.5)
+    n = len(all_results)
+    ax.set_title(f"N170 amplitude by condition — n={n} subjects (mean ± SD)")
+    ax.set_ylabel("Mean amplitude in 130–200 ms (µV)")
+    return fig
+
+
+def plot_n170_group_erp(
+    all_results: list[dict],
+    ax: plt.Axes | None = None,
+) -> plt.Figure:
+    """Group grand-average N170 ERP: mean waveform per condition across subjects.
+
+    Args:
+        all_results: list of dicts from load_all_n170_results().
+    """
+    fig, ax = (plt.subplots(figsize=(9, 4), layout="constrained") if ax is None
+               else (ax.get_figure(), ax))
+
+    from analysis.n170 import CONDITIONS
+
+    for cond in CONDITIONS:
+        subject_waveforms = []
+        times_ms = None
+        for r in all_results:
+            if cond not in r["per_condition"]:
+                continue
+            cdata = r["per_condition"][cond]
+            if times_ms is None:
+                times_ms = np.array(cdata["evoked_times_s"]) * 1000
+            channels = cdata["evoked_per_channel_uv"]
+            subj_wave = np.mean(
+                [channels[ch] for ch in _N170_CHANNELS if ch in channels], axis=0
+            )
+            subject_waveforms.append(subj_wave)
+
+        if not subject_waveforms or times_ms is None:
+            continue
+        waveforms_arr = np.array(subject_waveforms)
+        grand_mean = waveforms_arr.mean(axis=0)
+        grand_sem = waveforms_arr.std(axis=0) / np.sqrt(len(waveforms_arr))
+
+        color = CONDITION_COLORS.get(cond, "#888888")
+        ax.plot(times_ms, grand_mean, color=color, linewidth=1.8,
+                label=f"{cond} (n={len(subject_waveforms)})")
+        ax.fill_between(times_ms, grand_mean - grand_sem, grand_mean + grand_sem,
+                        color=color, alpha=0.15)
+
+    ax.axvspan(_N170_TMIN_MS, _N170_TMAX_MS, alpha=0.12, color="gold",
+               label=f"N170 window")
+    ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
+    ax.axhline(0, color="black", linewidth=0.5)
+
+    n = len(all_results)
+    ax.set_title(f"Group grand-average N170 ERP — n={n} subjects (mean ± SEM)")
+    ax.set_xlabel("Time (ms)")
+    ax.set_ylabel("Amplitude (µV)")
+    ax.legend(fontsize=9)
+    return fig
