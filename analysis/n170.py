@@ -202,15 +202,27 @@ def _build_amplitude_matrix(
 # --------------------------------------------------------------------------
 
 def _greenhouse_geisser_epsilon(data: np.ndarray) -> float:
-    """Greenhouse-Geisser epsilon for sphericity correction.
+    """Greenhouse-Geisser epsilon, computed in the (k-1)-dim contrast space.
 
-    data: (n_subjects, n_conditions) array. Clipped to [1/(k-1), 1].
+    data: (n_subjects, n_conditions). The condition covariance is projected onto
+    an orthonormal contrast basis (which removes the shared 'all-conditions'
+    axis) BEFORE the trace ratio. The earlier implementation applied the ratio
+    to the RAW covariance, leaving that common axis in; because subjects are
+    positively correlated across conditions the common axis dominates, which
+    pinned epsilon near the 1/(k-1) floor and over-corrected. Clipped to
+    [1/(k-1), 1].
     """
     k = data.shape[1]
-    S = np.cov(data.T)      # (k, k) sample covariance
-    tr_S = np.trace(S)
-    tr_S2 = np.trace(S @ S)
-    eps = tr_S ** 2 / ((k - 1) * tr_S2)
+    S = np.cov(data.T)                           # (k, k) condition covariance
+    H = np.eye(k) - np.ones((k, k)) / k          # centering matrix
+    u, _s, _vt = np.linalg.svd(H)
+    C = u[:, :k - 1].T                           # orthonormal rows, C @ ones = 0
+    Sstar = C @ S @ C.T                          # covariance in contrast space
+    tr = np.trace(Sstar)
+    tr2 = np.trace(Sstar @ Sstar)
+    if tr2 <= 0:
+        return 1.0
+    eps = (tr ** 2) / ((k - 1) * tr2)
     return float(np.clip(eps, 1.0 / (k - 1), 1.0))
 
 
