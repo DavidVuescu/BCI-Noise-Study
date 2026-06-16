@@ -43,11 +43,14 @@ from pathlib import Path
 
 import mne
 import numpy as np
+import pandas as pd
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import balanced_accuracy_score, confusion_matrix
 from sklearn.model_selection import train_test_split
 
 import statsmodels.api as sm
+from scipy.stats import friedmanchisquare, wilcoxon, t as t_dist
+from statsmodels.stats.anova import AnovaRM
 
 
 # ---- Pre-registered parameters ----------------------------------------
@@ -406,3 +409,272 @@ def train_and_evaluate(
             json.dump(result_dict, f, indent=2)
 
     return result
+
+
+# ==========================================================================
+# GROUP-LEVEL ANALYSIS  (primary confirmatory statistics, per pre-reg §5)
+# --------------------------------------------------------------------------
+# Mirrors analysis/n170.py:run_group_statistics, but on classifier balanced
+# accuracy and in the predicted direction noise < control. The Greenhouse-
+# Geisser epsilon here is the CORRECTED contrast-space version (the N170
+# module still carries the uncorrected one — backport this, or factor a shared
+# helper). Retention and false-positive aggregations are provided as
+# descriptive context; their tests are flagged EXPLORATORY (not registered as
+# inferential outcomes — §5 lists raw signal quality as descriptive).
+# ==========================================================================
+
+CLF_CONDITIONS = ["control_heldout", "chewing", "emi", "acoustic"]
+RAW_CONDITIONS = ["control", "chewing", "emi", "acoustic"]   # for rejection logs
+CONTROL_CEILING_THRESHOLD = 0.60   # §5 contingency: below this, primary -> N170
+
+
+def load_all_results(derived_root: str | Path = "data/derived") -> list[dict]:
+    """Scan data/derived/classifier-v3 and load every _results.json found."""
+    derived_root = Path(derived_root)
+    clf_dir = derived_root / DERIVED_PIPELINE
+    out = []
+    for path in sorted(clf_dir.glob("sub-*/sub-*_results.json")):
+        with open(path) as f:
+            out.append(json.load(f))
+    return out
+
+
+def build_accuracy_dataframe(results: list[dict]) -> pd.DataFrame:
+    """Tidy long-format frame: one row per (subject, condition)."""
+    rows = []
+    for r in results:
+        subj = r["subject_id"]
+        for cond in CLF_CONDITIONS:
+            if cond not in r["per_condition"]:
+                continue
+            m = r["per_condition"][cond]
+            cm = m["confusion_matrix"]
+            fpr = cm["FP"] / (cm["FP"] + cm["TN"]) if (cm["FP"] + cm["TN"]) > 0 else 0.0
+            rows.append({
+                "subject": subj,
+                "condition": cond,
+                "balanced_accuracy": m["balanced_accuracy"] * 100,
+                "sensitivity": m["true_target_rate"] * 100,
+                "specificity": m["true_nontarget_rate"] * 100,
+                "false_positive_rate": fpr * 100,
+                "n_epochs": m["n_epochs"],
+                "TP": cm["TP"], "TN": cm["TN"], "FP": cm["FP"], "FN": cm["FN"],
+            })
+    return pd.DataFrame(rows)
+
+
+def _build_accuracy_matrix(results: list[dict]) -> tuple[np.ndarray, list[str], list[str]]:
+    """(n_subjects, n_conditions) balanced-accuracy matrix (%). NaN if missing."""
+    subjects = [r["subject_id"] for r in results]
+    n, k = len(subjects), len(CLF_CONDITIONS)
+    M = np.full((n, k), np.nan)
+    for i, r in enumerate(results):
+        for j, cond in enumerate(CLF_CONDITIONS):
+            if cond in r["per_condition"]:
+                M[i, j] = r["per_condition"][cond]["balanced_accuracy"] * 100
+    return M, subjects, list(CLF_CONDITIONS)
+
+
+def _greenhouse_geisser_epsilon(data: np.ndarray) -> float:
+    """Greenhouse-Geisser epsilon, computed in the (k-1)-dim contrast space.
+
+    data: (n_subjects, n_conditions). Projects the condition covariance onto an
+    orthonormal contrast basis (removing the shared 'all-conditions' axis)
+    BEFORE the trace ratio. Omitting that projection — as the N170 module
+    currently does — pins epsilon near the 1/(k-1) floor and over-corrects.
+    Clipped to [1/(k-1), 1].
+    """
+    k = data.shape[1]
+    S = np.cov(data.T)
+    H = np.eye(k) - np.ones((k, k)) / k          # centering matrix
+    u, _s, _vt = np.linalg.svd(H)
+    C = u[:, :k - 1].T                           # orthonormal, C @ ones = 0
+    Sstar = C @ S @ C.T
+    tr = np.trace(Sstar)
+    tr2 = np.trace(Sstar @ Sstar)
+    if tr2 <= 0:
+        return 1.0
+    eps = (tr ** 2) / ((k - 1) * tr2)
+    return float(np.clip(eps, 1.0 / (k - 1), 1.0))
+
+
+def _paired_cohens_d_with_ci(x: np.ndarray, y: np.ndarray, alpha: float = 0.05) -> dict:
+    """Paired Cohen's d_z with analytical 95% CI. d<0 => x lower than y."""
+    diffs = x - y
+    n = len(diffs)
+    mean_d = float(diffs.mean())
+    sd_d = float(diffs.std(ddof=1))
+    if sd_d == 0:
+        return {"cohens_d": 0.0, "ci_low": 0.0, "ci_high": 0.0,
+                "mean_diff": mean_d, "sd_diff": sd_d, "n": n}
+    d = mean_d / sd_d
+    se_d = float(np.sqrt(1.0 / n + d ** 2 / (2.0 * n)))
+    t_crit = t_dist.ppf(1 - alpha / 2, df=n - 1)
+    return {"cohens_d": float(d), "ci_low": float(d - t_crit * se_d),
+            "ci_high": float(d + t_crit * se_d),
+            "mean_diff": mean_d, "sd_diff": sd_d, "n": n}
+
+
+def check_control_ceiling(results: list[dict],
+                          threshold: float = CONTROL_CEILING_THRESHOLD) -> dict:
+    """§5 contingency: if mean held-out control balanced accuracy < threshold,
+    the classifier analysis is uninterpretable and N170 becomes primary."""
+    vals = [r["per_condition"]["control_heldout"]["balanced_accuracy"]
+            for r in results if "control_heldout" in r["per_condition"]]
+    mean_ceiling = float(np.mean(vals)) if vals else 0.0
+    return {
+        "mean_control_balanced_accuracy": mean_ceiling,
+        "threshold": threshold,
+        "passes": mean_ceiling >= threshold,
+        "n": len(vals),
+    }
+
+
+def run_group_statistics(results: list[dict]) -> dict:
+    """Pre-registered PRIMARY group statistics on classifier balanced accuracy.
+
+    1. Friedman omnibus across the four conditions (non-parametric, primary).
+    2. Pairwise Wilcoxon signed-rank vs held-out control, ONE-TAILED in the
+       predicted direction noise < control (i.e. noise degrades accuracy).
+    3. RM-ANOVA with corrected Greenhouse-Geisser (parametric robustness check).
+    Effect sizes: paired Cohen's d_z with 95% CI. Subjects with any missing
+    condition are excluded list-wise.
+    """
+    M, subjects, conditions = _build_accuracy_matrix(results)
+    valid = ~np.any(np.isnan(M), axis=1)
+    M = M[valid]
+    subjects_valid = [s for s, v in zip(subjects, valid) if v]
+    n = len(subjects_valid)
+
+    ctrl_idx = conditions.index("control_heldout")
+    ctrl_vals = M[:, ctrl_idx]
+
+    descriptives = {}
+    for j, cond in enumerate(conditions):
+        v = M[:, j]
+        descriptives[cond] = {
+            "n": n, "mean": float(v.mean()), "sd": float(v.std(ddof=1)),
+            "sem": float(v.std(ddof=1) / np.sqrt(n)) if n > 0 else 0.0,
+            "median": float(np.median(v)),
+        }
+
+    friedman_stat, friedman_p = friedmanchisquare(*[M[:, j] for j in range(len(conditions))])
+
+    posthoc = {}
+    for cond in [c for c in conditions if c != "control_heldout"]:
+        j = conditions.index(cond)
+        noise_vals = M[:, j]
+        try:
+            stat_two, p_two = wilcoxon(noise_vals, ctrl_vals, alternative="two-sided")
+            # predicted: noise accuracy LOWER than control
+            stat_one, p_one = wilcoxon(noise_vals, ctrl_vals, alternative="less")
+        except Exception:
+            stat_two = p_two = stat_one = p_one = float("nan")
+        effect = _paired_cohens_d_with_ci(noise_vals, ctrl_vals)  # d<0 = degraded
+        posthoc[cond] = {
+            "wilcoxon_statistic": float(stat_two),
+            "p_two_tailed": float(p_two),
+            "p_one_tailed": float(p_one),
+            **effect,
+        }
+
+    rows_long = [
+        {"subject": s, "condition": c, "acc": float(M[i, j])}
+        for i, s in enumerate(subjects_valid)
+        for j, c in enumerate(conditions)
+    ]
+    df_long = pd.DataFrame(rows_long)
+    rm_anova = {}
+    try:
+        fit = AnovaRM(df_long, depvar="acc", subject="subject", within=["condition"]).fit()
+        f_stat = float(fit.anova_table["F Value"].iloc[0])
+        df_num = float(fit.anova_table["Num DF"].iloc[0])
+        df_den = float(fit.anova_table["Den DF"].iloc[0])
+        p_uncorr = float(fit.anova_table["Pr > F"].iloc[0])
+        gg_eps = _greenhouse_geisser_epsilon(M)
+        from scipy.stats import f as f_dist
+        p_gg = float(1 - f_dist.cdf(f_stat, df_num * gg_eps, df_den * gg_eps))
+        rm_anova = {
+            "f_statistic": f_stat, "df_numerator": df_num, "df_denominator": df_den,
+            "p_uncorrected": p_uncorr, "greenhouse_geisser_epsilon": gg_eps,
+            "df_numerator_gg": df_num * gg_eps, "df_denominator_gg": df_den * gg_eps,
+            "p_greenhouse_geisser": p_gg,
+        }
+    except Exception as exc:
+        rm_anova = {"error": str(exc)}
+
+    return {
+        "n_subjects": n,
+        "subjects_included": subjects_valid,
+        "conditions": conditions,
+        "control_ceiling": check_control_ceiling(results),
+        "descriptives": descriptives,
+        "friedman": {"statistic": float(friedman_stat),
+                     "p_value": float(friedman_p), "df": len(conditions) - 1},
+        "wilcoxon_posthoc_vs_control": posthoc,
+        "rm_anova": rm_anova,
+    }
+
+
+# ---- Retention layer (descriptive; exploratory test flagged as such) ------
+
+def load_all_rejection_logs(derived_root: str | Path = "data/derived") -> list[dict]:
+    """Load every preprocessing rejection.json (the retention / data-loss layer)."""
+    derived_root = Path(derived_root)
+    rej_dir = derived_root / PREPROCESSING_PIPELINE
+    out = []
+    for path in sorted(rej_dir.glob("sub-*/sub-*_cond-*_rejection.json")):
+        with open(path) as f:
+            out.append(json.load(f))
+    return out
+
+
+def build_retention_dataframe(logs: list[dict]) -> pd.DataFrame:
+    """Tidy frame of per-(subject, condition) retention / rejection."""
+    rows = []
+    for lg in logs:
+        n_planned = lg.get("n_planned", 0)
+        n_kept = lg.get("n_kept", 0)
+        rows.append({
+            "subject": lg.get("subject_id", "?"),
+            "condition": lg.get("condition", "?"),
+            "n_planned": n_planned,
+            "n_kept": n_kept,
+            "retention_rate": (n_kept / n_planned * 100) if n_planned else float("nan"),
+            "rejection_rate": lg.get("rejection_rate", float("nan")) * 100,
+        })
+    return pd.DataFrame(rows)
+
+
+def run_retention_exploratory(logs: list[dict]) -> dict:
+    """EXPLORATORY (not pre-registered as inferential): Friedman + one-tailed
+    Wilcoxon on rejection rate, predicted direction noise > control."""
+    df = build_retention_dataframe(logs)
+    piv = df.pivot_table(index="subject", columns="condition",
+                         values="rejection_rate")
+    piv = piv.reindex(columns=[c for c in RAW_CONDITIONS if c in piv.columns])
+    piv = piv.dropna(axis=0, how="any")
+    if piv.shape[0] < 3 or "control" not in piv.columns:
+        return {"note": "insufficient complete cases for exploratory test",
+                "per_condition_mean_rejection": df.groupby("condition")["rejection_rate"].mean().to_dict()}
+    M = piv.values
+    conds = list(piv.columns)
+    ctrl = M[:, conds.index("control")]
+    fr_stat, fr_p = friedmanchisquare(*[M[:, j] for j in range(len(conds))])
+    posthoc = {}
+    for c in [c for c in conds if c != "control"]:
+        v = M[:, conds.index(c)]
+        try:
+            _, p_one = wilcoxon(v, ctrl, alternative="greater")  # noise > control rejection
+        except Exception:
+            p_one = float("nan")
+        posthoc[c] = {"mean_rejection": float(v.mean()),
+                      "p_one_tailed_vs_control": float(p_one)}
+    return {
+        "n_subjects": int(M.shape[0]),
+        "conditions": conds,
+        "mean_rejection_by_condition": {c: float(M[:, conds.index(c)].mean()) for c in conds},
+        "friedman": {"statistic": float(fr_stat), "p_value": float(fr_p)},
+        "wilcoxon_posthoc_vs_control": posthoc,
+        "EXPLORATORY": True,
+    }
