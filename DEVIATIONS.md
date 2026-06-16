@@ -40,7 +40,14 @@ All deviations are reported here, regardless of their perceived impact on the st
 **Phase:** Analysis (Subject Inclusion)
 **Status:** Post-data analytical decision, made after preprocessing sub-01 through sub-16; applied to all subjects.
 
-* **Deviation:** §4, exclusion criterion 3 (restated in §6) excludes any subject whose epoch rejection rate exceeds 20% on *any* condition. The gate is narrowed to the control condition alone: a subject is excluded on epoch-quality grounds only if their control recording exceeds 20% rejection, and rejection in chewing, EMI, or acoustic no longer triggers subject-level exclusion. Nothing else changes — the ±150 µV peak-to-peak threshold, the boundary exclusion rule, and the epoching are all untouched, and per-condition rejection rates continue to be computed and reported in full per §6.
+* **Deviation:** §4, exclusion criterion 3 (restated in §6) excludes any subject whose epoch rejection rate 
+  exceeds 20% on *any* condition. 
+  The gate is narrowed to the control condition alone: a subject is excluded on epoch-quality grounds 
+  only if their control recording exceeds 20% rejection, and rejection in chewing, EMI, 
+  or acoustic no longer triggers subject-level exclusion. 
+  Nothing else changes — the ±150 µV peak-to-peak threshold, the boundary exclusion rule, 
+  and the epoching are all untouched, and per-condition rejection rates continue to be computed 
+  and reported in full per §6.
 
 * **Motivation:** The original "any condition" wording is, on reflection, incoherent for a physical-layer noise study. Chewing is operationalised as a sensor-coupled EMG manipulation, so high-amplitude EMG tripping the rejection threshold is the condition doing exactly what it was designed to do, not evidence that the subject's data is untrustworthy. Excluding a subject because the noise condition was noisy selects against the very degradation the study exists to quantify, which is circular. Control is the only condition with no introduced noise, and it is also the data on which each subject's classifier is trained, so its rejection rate is the principled index of whether a subject's underlying signal is clean enough to analyse. Gating on control answers the question the criterion was meant to ask (is this subject's baseline usable?) without contaminating it with the manipulation's intended effect.
 
@@ -49,5 +56,23 @@ All deviations are reported here, regardless of their perceived impact on the st
   This change matters for inference. Applying the registered rule drops the sample to N=6 and moves the primary chewing-vs-control contrast from p=0.014 to p=0.078, with the Friedman omnibus going from 0.012 to 0.060; under the control-only rule the chewing effect remains significant. The reason this is a question of power rather than of artifact is that the effect size is stable across both definitions (Cohen's dz = -0.82 at N=10, -0.72 at N=6): the four excluded subjects do not reverse or dissolve the effect, they remove four of the cleanest baselines and the statistical power that came with them. The deviation recovers that power rather than manufacturing the result. To keep this transparent, this will be explicitly reported in the manuscript.
 
   One limitation is retained and belongs next to this entry. Because rejected epochs are discarded before classification, chewing balanced accuracy is computed on the surviving, cleaner subset and is therefore a conservative estimate of the true degradation — the worst chewing epochs never reach the classifier. For high-rejection subjects the chewing test set is also thin (sub-10 retains 316 of roughly 1285 epochs, only 33 of them targets), and those per-subject chewing figures are read with that caveat. The per-condition rejection rate is accordingly reported as a finding in its own right, not merely as an exclusion gate.
+
+---
+
+### 2026-06-11: Stimulus WAV Bit Depth (32-bit vs registered 24-bit)
+**Phase:** Stimulus Generation
+**Status:** Documentation correction; stimulus already generated and hash-locked.
+
+* **Deviation:** §3 (Acoustic) specifies the pink-noise stimulus as a 24-bit WAV.
+  The generator writes int32 samples via `scipy.io.wavfile.write`, which emits
+  32-bit PCM; scipy provides no 24-bit integer WAV encoder. The deposited
+  `pink_noise.wav` is therefore 32-bit PCM with sample values confined to the
+  24-bit range, not a true 24-bit container.
+* **Motivation:** Identified on review of the export path after generation.
+* **Impact:** None. Both depths far exceed the dynamic range of the playback
+  chain (single consumer speaker at 65 dB(A) SPL) and of the perturbation itself.
+  The waveform, spectrum, SHA-256-verified contents, and all 15 stimulus-integrity
+  checks are unaffected; the registered spectral, band-limiting, level, and fade
+  properties hold identically. The discrepancy is in the sample container format only.
 
 ---
