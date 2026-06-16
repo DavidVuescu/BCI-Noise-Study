@@ -263,12 +263,12 @@ def plot_subject_summary(
 
 
 def load_all_results(derived_root: str | Path = "data/derived") -> list[dict]:
-    """Scan data/derived/classifier-v2 and load every _results.json found.
+    """Scan data/derived/classifier-v3 and load every _results.json found.
 
     Returns a list of result dicts, one per processed subject.
     """
     derived_root = Path(derived_root)
-    clf_dir = derived_root / "classifier-v2"
+    clf_dir = derived_root / "classifier-v3"
     results = []
     for path in sorted(clf_dir.glob("sub-*/sub-*_results.json")):
         with open(path) as f:
