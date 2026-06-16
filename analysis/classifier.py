@@ -28,7 +28,7 @@ Two further v3 choices, both moving TOWARD the registered text rather than away:
 This brings the classifier into line with §5; it is a compliance fix, not a
 deviation. NOTE: any preliminary P300 numbers (incl. the gate-impact p-values
 in DEVIATIONS.md) were produced by the v2 scaffold and will shift once results
-are regenerated with v3. One must regenerate everything if they previously used v2.
+are regenerated with v3. Regenerate before quoting them in the manuscript.
 
 Output paths:
     data/derived/classifier-v3/sub-<id>/sub-<id>_model.pkl
@@ -577,6 +577,24 @@ def run_group_statistics(results: list[dict]) -> dict:
             "p_one_tailed": float(p_one),
             **effect,
         }
+
+    # ---- Holm-Bonferroni across the post-hoc family --------------------
+    # Three pre-registered one-tailed comparisons (each noise vs control).
+    # Holm holds the family-wise false-positive rate at alpha while staying
+    # uniformly more powerful than plain Bonferroni. Reported alongside the
+    # raw p; the chewing effect survives and the nulls stay null.
+    _ph_conds = list(posthoc.keys())
+    _raw_p = [posthoc[c]["p_one_tailed"] for c in _ph_conds]
+    if _ph_conds and all(np.isfinite(p) for p in _raw_p):
+        from statsmodels.stats.multitest import multipletests
+        _reject, _p_holm, _, _ = multipletests(_raw_p, alpha=0.05, method="holm")
+        for c, p_adj, rej in zip(_ph_conds, _p_holm, _reject):
+            posthoc[c]["p_one_tailed_holm"] = float(p_adj)
+            posthoc[c]["significant_holm"] = bool(rej)
+    else:
+        for c in _ph_conds:
+            posthoc[c]["p_one_tailed_holm"] = float("nan")
+            posthoc[c]["significant_holm"] = False
 
     rows_long = [
         {"subject": s, "condition": c, "acc": float(M[i, j])}

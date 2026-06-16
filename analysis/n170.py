@@ -317,6 +317,24 @@ def run_group_statistics(results: list[dict]) -> dict:
             **effect,
         }
 
+    # ---- Holm-Bonferroni across the post-hoc family --------------------
+    # Three pre-registered one-tailed comparisons (each noise vs control).
+    # Holm holds the family-wise false-positive rate at alpha while staying
+    # uniformly more powerful than plain Bonferroni. Reported alongside the
+    # raw p; conclusions are unchanged.
+    _ph_conds = list(posthoc.keys())
+    _raw_p = [posthoc[c]["p_one_tailed"] for c in _ph_conds]
+    if _ph_conds and all(np.isfinite(p) for p in _raw_p):
+        from statsmodels.stats.multitest import multipletests
+        _reject, _p_holm, _, _ = multipletests(_raw_p, alpha=0.05, method="holm")
+        for c, p_adj, rej in zip(_ph_conds, _p_holm, _reject):
+            posthoc[c]["p_one_tailed_holm"] = float(p_adj)
+            posthoc[c]["significant_holm"] = bool(rej)
+    else:
+        for c in _ph_conds:
+            posthoc[c]["p_one_tailed_holm"] = float("nan")
+            posthoc[c]["significant_holm"] = False
+
     # ---- 3. Parametric RM-ANOVA with GG correction -----------------------
     rows_long = [
         {"subject": subj, "condition": cond, "n170": float(matrix[i, j])}
