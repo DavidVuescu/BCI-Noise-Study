@@ -76,3 +76,38 @@ All deviations are reported here, regardless of their perceived impact on the st
   properties hold identically. The discrepancy is in the sample container format only.
 
 ---
+
+### 2026-06-11: Correction to 2026-06-06 entry — refit threshold & bad-channel handling
+**Phase:** Data Acquisition / Analysis
+**Status:** Correction of a prior log entry; aligns documentation with registered §4 and actual procedure.
+
+* **Correction:** The 2026-06-06 entry stated diagnostics were "re-run until no
+  channel was flagged." This overstates the procedure and is stricter than the
+  registered protocol. Per §4 criterion 1, up to two channels flagged at >60 µV
+  stdev are tolerated and proceeded with (flagged bad for the session). Refit
+  (re-part hair, re-gel, brush-handle parting) is performed only when >2 channels
+  are flagged; the diagnostic is then re-run to confirm recovery within the
+  registered 5-minute window. The realized procedure matches the registered
+  >2-channel threshold; the prior entry described a procedure neither registered
+  nor performed.
+
+* **Diagnostic administration detail:** Diagnostics were administered with the
+  subject fixating a central point, and run multiple times (typ. 3–5) to assess
+  contact stability before the gating decision. Fixation isolates electrode
+  contact quality from gross-movement artifact and matches the attentional state
+  of the recordings themselves; the ±150 µV epoch-rejection gate (§6) remains the
+  downstream backstop against in-band contamination.
+
+* **Bad-channel handling (operationalises §5 quality gate):** A channel flagged
+  in ANY of a subject's condition diagnostics is excluded from that subject's
+  classifier feature set across ALL four conditions, preserving a consistent
+  feature space for the within-subject classifier. Posterior-lateral sites
+  (PO7/PO8) are part of the N170 triad; subjects with persistent flags there have
+  N170 estimated on the reduced channel set, reported as a per-subject reliability note.
+
+* **Impact:** No subject was retained or excluded differently from what the
+  registered ≤2-channel tolerance dictates. The change is documentary plus the
+  downstream feature-set exclusion, which brings the pipeline into line with §5
+  rather than departing from it.
+
+---
