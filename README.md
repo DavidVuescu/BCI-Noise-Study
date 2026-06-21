@@ -4,7 +4,7 @@ A reproducible research pipeline for measuring how environmental noise — mecha
 
 This is the codebase for the master's dissertation of **Mihai-David Vuescu**, West University of Timișoara, conducted under pre-registration on OSF.
 
-- **Pre-registration:** [osf.io/yq8wj](https://osf.io/yq8wj)
+- **Pre-registration:** [osf.io/bng2z](https://osf.io/bng2z/files/ew4xd)
 - **Hardware:** Unicorn Hybrid Black (g.tec medical engineering), 8-channel hybrid dry/wet EEG @ 250 Hz, Bluetooth 2.1+EDR
 - **Stack:** Python 3.10, MNE-Python, pygame, scikit-learn, statsmodels, numpy/scipy
 
