@@ -111,3 +111,45 @@ All deviations are reported here, regardless of their perceived impact on the st
   rather than departing from it.
 
 ---
+
+### 2026-06-11: EMI Pilot Gate Not Run as Preregistered (§8)
+**Phase:** Pre-Study Validation
+**Status:** Deviation documented; retrospective validation completed 2026-06-25.
+
+* **Deviation:** Preregistration §8 required a headset-on-table pilot recording before
+  main data collection to confirm that the EMI condition (iperf3 UDP flood, 200 Mbps,
+  2.4 GHz channel 6, 40 MHz) elevated the Bluetooth counter-gap rate. This standalone
+  pilot was not conducted. WiFi saturation was instead verified via iperf3 throughput
+  logs, WiFiMan channel-utilisation graphs, and UniFi controller screenshots captured
+  before and after each session block.
+
+* **Retrospective validation (2026-06-25):** The preregistered question was answered
+  retrospectively using actual subject recordings. Counter-gap metrics (samples_dropped
+  and samples_expected_by_counter from meta.json) were extracted for all completed
+  recordings and compared between EMI and control conditions.
+
+  All files for this validation are in protocol/emi_pilot/:
+  - iperf3 throughput log: airspace-test_iperf.log.txt
+  - Analysis script:       emi_pilot_validation.py
+  - Results output:        emi_validation_results.json
+
+  Results:
+  - N subjects with valid control recordings: 42
+  - N subjects with valid EMI recordings: 44
+  - Mean dropout rate — control: 0.000% (std 0.000%, range 0.000–0.000%)
+  - Mean dropout rate — EMI:     0.000% (std 0.000%, range 0.000–0.000%)
+  - Statistical test: Mann-Whitney U, one-tailed (EMI > Control)
+  - Statistic: 924.000, p = 1.0000, Cohen's d = 0.000
+  - Verdict: AFH TOLERATED — no statistically significant elevation in
+    counter-gap rate under the EMI condition.
+
+* **Interpretation:** The Unicorn's Bluetooth radio successfully used Adaptive
+  Frequency Hopping to avoid the saturated 2.4 GHz channel. Zero samples were dropped
+  in any recording in any condition across all subjects. The WiFi saturation was
+  physically present (confirmed by iperf3 and UniFi logs), but the BT link was resilient.
+  This means the EMI condition did not degrade the signal at the transmission layer;
+  any classifier accuracy differences under EMI arise from RF-induced sensor noise
+  rather than data loss. This is consistent with the null or modest EMI accuracy
+  effects observed across subjects and is reported in the Discussion.
+
+---
