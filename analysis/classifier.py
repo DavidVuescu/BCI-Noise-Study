@@ -60,6 +60,12 @@ DOWNSAMPLED_HZ = 50
 TRAIN_FRACTION = 0.70
 
 DERIVED_PIPELINE = "classifier-v3"
+# Blockwise (leave-one-sub-block-out) robustness analysis, added 2026-08-13 in
+# response to SYNASC 2026 Reviewer 1. Same SWLDA, same preprocessing epochs, same
+# parameters -- ONLY the control train/test split differs. Deliberately a sibling
+# directory rather than a version bump: it does not supersede v3, and under the
+# decision rule pre-committed in DEVIATIONS.md (2026-08-13) v3 may remain primary.
+DERIVED_PIPELINE_BLOCKWISE = "classifier-v3-blockwise"
 PREPROCESSING_PIPELINE = "preprocessing-v2"
 
 
@@ -428,10 +434,17 @@ RAW_CONDITIONS = ["control", "chewing", "emi", "acoustic"]   # for rejection log
 CONTROL_CEILING_THRESHOLD = 0.60   # §5 contingency: below this, primary -> N170
 
 
-def load_all_results(derived_root: str | Path = "data/derived") -> list[dict]:
-    """Scan data/derived/classifier-v3 and load every _results.json found."""
+def load_all_results(derived_root: str | Path = "data/derived",
+                     pipeline: str = DERIVED_PIPELINE) -> list[dict]:
+    """Scan data/derived/<pipeline> and load every _results.json found.
+
+    `pipeline` defaults to DERIVED_PIPELINE, so existing calls are unchanged in
+    behaviour. Pass DERIVED_PIPELINE_BLOCKWISE to load the blockwise robustness
+    results, which are written in the identical schema so that the SAME
+    run_group_statistics() runs over either set without modification.
+    """
     derived_root = Path(derived_root)
-    clf_dir = derived_root / DERIVED_PIPELINE
+    clf_dir = derived_root / pipeline
     out = []
     for path in sorted(clf_dir.glob("sub-*/sub-*_results.json")):
         with open(path) as f:
@@ -696,3 +709,300 @@ def run_retention_exploratory(logs: list[dict]) -> dict:
         "wilcoxon_posthoc_vs_control": posthoc,
         "EXPLORATORY": True,
     }
+
+
+# ==========================================================================
+# BLOCKWISE (LEAVE-ONE-SUB-BLOCK-OUT) ROBUSTNESS ANALYSIS
+# --------------------------------------------------------------------------
+# Added 2026-08-13 in response to SYNASC 2026 Reviewer 1, who observed that the
+# control condition is split within a single recording while the three noise
+# conditions are tested on entirely separate recordings, and that with a 1000 ms
+# epoch window at a 233 ms SOA adjacent epochs overlap (reach: 4 x 233 = 932 ms).
+#
+# Everything below is ADDITIVE. train_and_evaluate() above is untouched, so the
+# v3 numbers in the submitted manuscript remain exactly reproducible.
+#
+# Design (pre-committed in DEVIATIONS.md 2026-08-13, before any result was seen):
+#   * Folds are the three control sub-blocks. Train on two, test on the third.
+#   * Each fold's model ALSO scores the full chewing / EMI / acoustic recordings,
+#     so every condition is scored by models trained on an identical amount of
+#     data. Reported values are the mean across the three folds.
+#   * Leak-free by construction: the registered boundary rejection (first 2 s /
+#     last 1 s of each sub-block) plus the self-paced inter-sub-block rest leaves
+#     a measured 11.9-77.8 s gap between the last epoch of one sub-block and the
+#     first of the next, against a 932 ms overlap reach.
+#   * Confound to keep in view: each fold also tests a target CELL absent from
+#     its training set, so a drop cannot be attributed to leakage alone. The
+#     blockwise ceiling is a conservative lower bound, not a leakage measurement.
+#
+# Output: data/derived/classifier-v3-blockwise/sub-<id>/sub-<id>_results.json,
+# in the SAME schema as v3 so run_group_statistics() applies unmodified.
+# ==========================================================================
+
+
+class SWLDAClassifierFast(SWLDAClassifier):
+    """SWLDAClassifier with a vectorised forward step. Numerically identical.
+
+    WHY THIS EXISTS
+    ---------------
+    The parent's forward step fits a fresh statsmodels OLS for every one of the
+    ~400 candidate features at every iteration, which costs minutes per model.
+    The blockwise analysis needs three fits per subject instead of one, making
+    the parent implementation impractical to run.
+
+    WHAT IT CHANGES
+    ---------------
+    Nothing about the mathematics. The conditional p-value of adding candidate j
+    to the current design M is obtained from partitioned regression
+    (Frisch-Waugh-Lovell) rather than from a full refit:
+
+        r_y = y - M (M'M)^-1 M'y          residualised response
+        r_j = x_j - M (M'M)^-1 M'x_j      residualised candidate
+        b_j = (r_j . r_y) / (r_j . r_j)
+        RSS_j = RSS_current - (r_j . r_y)^2 / (r_j . r_j)
+        se_j  = sqrt( RSS_j / (n - k - 1) / (r_j . r_j) )
+        t_j   = b_j / se_j,   p_j = 2 * P(T_{n-k-1} > |t_j|)
+
+    These are the same closed-form quantities statsmodels reports for the
+    just-added coefficient, computed for all candidates in two matrix solves
+    instead of 400 model fits. Candidates that are numerically collinear with the
+    current design (r_j . r_j below tolerance) are assigned p = inf, mirroring the
+    parent's `except: continue` behaviour.
+
+    The backward step is inherited unchanged -- it is a single fit per iteration
+    and was never the bottleneck.
+
+    Equivalence against the parent is asserted by analysis/_test_blockwise.py,
+    which requires identical selected feature sets and identical metrics.
+    """
+
+    _COLLINEAR_TOL = 1e-10
+
+    def _stepwise_select(self, X: np.ndarray, y_reg: np.ndarray) -> list[int]:
+        n_samples, n_features = X.shape
+        selected: list[int] = []
+        available = list(range(n_features))
+
+        Xd = X.astype(np.float64)
+        yd = y_reg.astype(np.float64)
+        ones = np.ones((n_samples, 1))
+
+        iteration = 0
+        max_iterations = self.max_features * 4  # safety bound (matches parent)
+        while iteration < max_iterations:
+            iteration += 1
+
+            # ---- Forward: best candidate to add (vectorised) --------------
+            best_pval = 1.0
+            best_feature = None
+            if len(selected) < self.max_features and available:
+                M = np.hstack([ones, Xd[:, selected]]) if selected else ones
+                k = M.shape[1]
+                df = n_samples - k - 1
+                if df > 0:
+                    MtM = M.T @ M
+                    Z = Xd[:, available]
+                    # Residualise response and all candidates against M at once.
+                    coef_y = np.linalg.solve(MtM, M.T @ yd)
+                    r_y = yd - M @ coef_y
+                    coef_Z = np.linalg.solve(MtM, M.T @ Z)
+                    r_Z = Z - M @ coef_Z
+
+                    d = np.einsum("ij,ij->j", r_Z, r_Z)      # r_j . r_j
+                    a = r_Z.T @ r_y                          # r_j . r_y
+                    rss_cur = float(r_y @ r_y)
+
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        b = a / d
+                        rss_new = rss_cur - (a ** 2) / d
+                        se = np.sqrt(np.maximum(rss_new, 0.0) / df / d)
+                        tvals = b / se
+
+                    bad = (d <= self._COLLINEAR_TOL) | ~np.isfinite(tvals)
+                    pvals = np.full(len(available), np.inf)
+                    good = ~bad
+                    if good.any():
+                        pvals[good] = 2.0 * t_dist.sf(np.abs(tvals[good]), df)
+
+                    j_local = int(np.argmin(pvals))
+                    if np.isfinite(pvals[j_local]):
+                        best_pval = float(pvals[j_local])
+                        best_feature = available[j_local]
+
+            added = False
+            if best_feature is not None and best_pval < self.p_enter:
+                selected.append(best_feature)
+                available.remove(best_feature)
+                added = True
+                if self.verbose:
+                    print(f"  + add feat {best_feature} (p={best_pval:.4f}), "
+                          f"selected={len(selected)}")
+
+            # ---- Backward: inherited logic, single fit per iteration ------
+            removed = False
+            if len(selected) > 1:
+                X_full = sm.add_constant(Xd[:, selected], has_constant="add")
+                try:
+                    model = sm.OLS(yd, X_full).fit()
+                    pvals_selected = model.pvalues[1:]  # skip constant
+                    worst_idx = int(np.argmax(pvals_selected))
+                    worst_pval = float(pvals_selected[worst_idx])
+                    if worst_pval > self.p_remove:
+                        feat = selected[worst_idx]
+                        selected.pop(worst_idx)
+                        available.append(feat)
+                        removed = True
+                        if self.verbose:
+                            print(f"  - remove feat {feat} (p={worst_pval:.4f}), "
+                                  f"selected={len(selected)}")
+                except Exception:
+                    pass
+
+            if not added and not removed:
+                break
+
+        return sorted(selected)
+
+
+def _extract_features_with_blocks(
+    epochs: mne.Epochs, target_sfreq: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """As _extract_features, but also returns the per-epoch sub-block index.
+
+    Resampling neither drops nor reorders epochs, so the metadata rows stay
+    aligned with the returned feature matrix.
+    """
+    epochs_ds = epochs.copy().resample(target_sfreq, verbose="WARNING")
+    data = epochs_ds.get_data() * 1e6  # volts -> microvolts
+    n_epochs, n_channels, n_samples = data.shape
+    X = data.reshape(n_epochs, n_channels * n_samples).astype(np.float32)
+    y = (epochs_ds.metadata["is_target"].values).astype(int)
+    sub_block = (epochs_ds.metadata["sub_block_index"].values).astype(int)
+    return X, y, sub_block
+
+
+def train_and_evaluate_blockwise(
+    subject_id: str,
+    derived_root: str | Path = "data/derived",
+    save: bool = True,
+    verbose: bool = False,
+) -> dict:
+    """Leave-one-sub-block-out CV on control; every fold scores all conditions.
+
+    Returns a dict in the same schema as train_and_evaluate()'s saved JSON, with
+    an extra "folds" key carrying the per-fold breakdown (used to check whether
+    accuracy declines across sub-blocks within a recording).
+    """
+    derived_root = Path(derived_root)
+
+    control_epochs = _load_epochs(subject_id, "control", derived_root)
+    X_ctrl, y_ctrl, sb_ctrl = _extract_features_with_blocks(
+        control_epochs, target_sfreq=DOWNSAMPLED_HZ
+    )
+
+    # Noise recordings are loaded once and scored by every fold's model.
+    noise: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for cond in ["chewing", "emi", "acoustic"]:
+        epochs = _load_epochs(subject_id, cond, derived_root)
+        noise[cond] = _extract_features(epochs, target_sfreq=DOWNSAMPLED_HZ)
+
+    blocks = sorted(int(b) for b in np.unique(sb_ctrl))
+    folds: list[dict] = []
+
+    for held in blocks:
+        train_mask = sb_ctrl != held
+        test_mask = sb_ctrl == held
+
+        clf = SWLDAClassifierFast(
+            p_enter=SWLDA_P_ENTER,
+            p_remove=SWLDA_P_REMOVE,
+            max_features=SWLDA_MAX_FEATURES,
+            verbose=False,
+        )
+        clf.fit(X_ctrl[train_mask], y_ctrl[train_mask])
+
+        fold = {
+            "held_out_sub_block": held,
+            "n_train_epochs": int(train_mask.sum()),
+            "train_target_count": int((y_ctrl[train_mask] == 1).sum()),
+            "train_nontarget_count": int((y_ctrl[train_mask] == 0).sum()),
+            "n_features": int(len(clf.selected_features_)),
+            "per_condition": {
+                "control_heldout": _evaluate(clf, X_ctrl[test_mask], y_ctrl[test_mask])
+            },
+        }
+        for cond, (X_n, y_n) in noise.items():
+            fold["per_condition"][cond] = _evaluate(clf, X_n, y_n)
+        folds.append(fold)
+
+        if verbose:
+            ba = fold["per_condition"]["control_heldout"]["balanced_accuracy"]
+            print(f"    fold hold-out sb{held}: {fold['n_features']} feats, "
+                  f"control {ba * 100:.1f}%")
+
+    # ---- Aggregate across folds ----------------------------------------
+    # Rates are the mean of the per-fold rates (as pre-committed). The confusion
+    # matrix is pooled; for control_heldout that means every control epoch counted
+    # exactly once, since each fold holds out a different sub-block.
+    per_condition: dict = {}
+    for cond in CLF_CONDITIONS:
+        vals = [f["per_condition"][cond] for f in folds]
+        per_condition[cond] = {
+            "n_epochs": int(sum(v["n_epochs"] for v in vals)),
+            "n_target": int(sum(v["n_target"] for v in vals)),
+            "n_nontarget": int(sum(v["n_nontarget"] for v in vals)),
+            "balanced_accuracy": float(np.mean([v["balanced_accuracy"] for v in vals])),
+            "true_target_rate": float(np.mean([v["true_target_rate"] for v in vals])),
+            "true_nontarget_rate": float(np.mean([v["true_nontarget_rate"] for v in vals])),
+            "confusion_matrix": {
+                k: int(sum(v["confusion_matrix"][k] for v in vals))
+                for k in ("TN", "FP", "FN", "TP")
+            },
+            "balanced_accuracy_per_fold": [float(v["balanced_accuracy"]) for v in vals],
+            "n_folds": len(vals),
+        }
+
+    result_dict = {
+        "subject_id": subject_id,
+        "classifier_type": "swlda-blockwise",
+        "n_features": float(np.mean([f["n_features"] for f in folds])),
+        "n_train_epochs": int(np.mean([f["n_train_epochs"] for f in folds])),
+        "train_target_count": int(np.mean([f["train_target_count"] for f in folds])),
+        "train_nontarget_count": int(np.mean([f["train_nontarget_count"] for f in folds])),
+        "per_condition": per_condition,
+        "folds": folds,
+        "parameters": {
+            "downsampled_hz": DOWNSAMPLED_HZ,
+            "split": "leave-one-sub-block-out",
+            "n_folds": len(folds),
+            "sub_blocks": blocks,
+            "swlda_p_enter": SWLDA_P_ENTER,
+            "swlda_p_remove": SWLDA_P_REMOVE,
+            "swlda_max_features": SWLDA_MAX_FEATURES,
+            "balancing_applied": False,
+            "preprocessing_pipeline": PREPROCESSING_PIPELINE,
+        },
+    }
+
+    if save:
+        out_dir = derived_root / DERIVED_PIPELINE_BLOCKWISE / f"sub-{subject_id}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with open(out_dir / f"sub-{subject_id}_results.json", "w") as f:
+            json.dump(result_dict, f, indent=2)
+
+    return result_dict
+
+
+def build_fold_dataframe(results: list[dict]) -> pd.DataFrame:
+    """Per-(subject, held-out sub-block) control accuracy, for the question of
+    whether classification degrades across sub-blocks within a recording."""
+    rows = []
+    for r in results:
+        for f in r.get("folds", []):
+            rows.append({
+                "subject": r["subject_id"],
+                "held_out_sub_block": f["held_out_sub_block"],
+                "n_features": f["n_features"],
+                "balanced_accuracy": f["per_condition"]["control_heldout"]["balanced_accuracy"] * 100,
+            })
+    return pd.DataFrame(rows)
