@@ -162,12 +162,38 @@ def recording_residuals(subject_id: str, condition: str,
     }
 
 
-def scan_all_recordings(data_dir: str | Path = "data/raw") -> pd.DataFrame:
-    """Residual diagnostics for every recording in the dataset."""
+def analysed_subjects(derived_root: str | Path = "data/derived") -> set[str]:
+    """Subjects retained for analysis, identified by a saved classifier model."""
+    import glob as _glob
+    pattern = str(Path(derived_root) / "classifier-v3" / "sub-*" / "sub-*_model.pkl")
+    return {Path(p).parts[-2].replace("sub-", "") for p in _glob.glob(pattern)}
+
+
+def scan_all_recordings(data_dir: str | Path = "data/raw",
+                        analysed_only: bool = True,
+                        derived_root: str | Path = "data/derived") -> pd.DataFrame:
+    """Residual diagnostics per recording.
+
+    `data/raw` also holds partial recordings from participants screened out at the
+    electrode-fit gate: at the time of writing, three such participants contribute
+    four recordings. Including them gives 168 rows for a study of 41 participants,
+    which produces per-condition counts (41/43/43/41) that do not reconcile with
+    the reported N and invite a question the answer to which is uninformative.
+
+    `analysed_only=True` therefore restricts the scan to the 41 retained
+    participants, giving a clean 164 = 41 x 4. This is a presentational choice
+    only: none of the excluded recordings is flagged (all sit at 5.6-5.9 ms), the
+    flagged counts, the threshold counts, and the subject sets returned by
+    analysis.robustness_checks.subjects_above_residual() are identical either way.
+    Pass False to scan everything on disk.
+    """
+    keep = analysed_subjects(derived_root) if analysed_only else None
     rows = []
     for sub_dir in sorted(Path(data_dir).glob("sub-*")):
         sid = sub_dir.name.replace("sub-", "")
         if sid.startswith("pilot"):
+            continue
+        if keep is not None and sid not in keep:
             continue
         for cond in CONDITIONS:
             if not (sub_dir / f"sub-{sid}_cond-{cond}_acqtime.npy").exists():
@@ -268,6 +294,170 @@ def compare_fits(pairs: list[tuple[str, str]],
 # ---------------------------------------------------------------------------
 # Constant-lag control analysis
 # ---------------------------------------------------------------------------
+
+def _fit_clock_any(tr: np.ndarray, acq: np.ndarray, estimator: str) -> tuple[float, float]:
+    """Clock fit under a named estimator. Extends fit_clock() to robust regressors."""
+    if estimator in ("ols", "upper_envelope"):
+        return fit_clock(tr, acq, mode=estimator)
+
+    from sklearn.linear_model import (HuberRegressor, LinearRegression,
+                                      RANSACRegressor)
+    X = tr.reshape(-1, 1)
+    if estimator == "huber":
+        m = HuberRegressor(epsilon=1.35, alpha=0.0, max_iter=300).fit(X, acq)
+        return float(m.coef_[0]), float(m.intercept_)
+    if estimator == "ransac":
+        m = RANSACRegressor(LinearRegression(), random_state=0, max_trials=100).fit(X, acq)
+        return float(m.estimator_.coef_[0]), float(m.estimator_.intercept_)
+    raise ValueError(f"unknown estimator: {estimator}")
+
+
+def _score_with_fit(subject_id: str, condition: str, m: float, c: float,
+                    data_dir: str | Path, derived_root: str | Path) -> float:
+    """AUC for a recording whose markers are placed by an arbitrary clock fit."""
+    from sklearn.metrics import roc_auc_score
+    rec = load_recording(subject_id, condition, data_dir)
+    anchor = rec.meta["recorder"]["wall_clock_anchor_unix"]
+    markers = rec.markers.copy()
+    marker_acq = m * (markers["wall_time"].values - anchor) + c
+    markers["acq_time"] = marker_acq
+    markers["sample"] = np.clip(
+        np.round(marker_acq * SAMPLE_RATE_HZ).astype(int), 0, len(rec.acq_time) - 1)
+    epochs = preprocess_recording(replace(rec, markers=markers), save=False).epochs
+    X, y = _extract_features(epochs, target_sfreq=DOWNSAMPLED_HZ)
+    clf = _load_model(subject_id, derived_root)
+    return float(roc_auc_score(y, clf.decision_function(X)))
+
+
+ESTIMATORS = ("ols", "upper_envelope", "huber", "ransac")
+
+
+def compare_estimators(pairs: list[tuple[str, str]],
+                       estimators: tuple[str, ...] = ESTIMATORS,
+                       data_dir: str | Path = "data/raw",
+                       derived_root: str | Path = "data/derived") -> pd.DataFrame:
+    """AUC per recording under each clock estimator.
+
+    The upper-envelope fit targets the low-delay boundary directly and is the
+    most aggressive of the four; Huber downweights outliers while remaining a
+    central-tendency estimator, so it degrades gracefully to OLS when residuals
+    are symmetric. That difference is the whole point of running this: an
+    estimator that repairs badly misaligned recordings while leaving well-aligned
+    ones untouched is preferable to one that trades the second for the first.
+    """
+    rows = []
+    for sid, cond in pairs:
+        tr, acq = _load_timing(sid, cond, data_dir)
+        row = {"subject": sid, "condition": cond,
+               "residual_std_ms": recording_residuals(sid, cond, data_dir)["residual_std_ms"]}
+        for est in estimators:
+            try:
+                m, c = _fit_clock_any(tr, acq, est)
+                row[f"auc_{est}"] = round(_score_with_fit(sid, cond, m, c,
+                                                          data_dir, derived_root), 4)
+            except Exception:
+                row[f"auc_{est}"] = float("nan")
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def keep_sensitivity(pairs: list[tuple[str, str]],
+                     keeps: tuple[float, ...] = (0.15, 0.20, 0.30, 0.40, 0.50),
+                     data_dir: str | Path = "data/raw",
+                     derived_root: str | Path = "data/derived") -> pd.DataFrame:
+    """AUC across values of the upper-envelope `keep` fraction.
+
+    ENVELOPE_KEEP = 0.30 was chosen without tuning. This exists so that the
+    dependence of any conclusion on that unmotivated choice is visible rather
+    than assumed away.
+    """
+    rows = []
+    for sid, cond in pairs:
+        tr, acq = _load_timing(sid, cond, data_dir)
+        row = {"subject": sid, "condition": cond,
+               "residual_std_ms": recording_residuals(sid, cond, data_dir)["residual_std_ms"]}
+        for k in keeps:
+            m, c = fit_clock(tr, acq, mode="upper_envelope", keep=k)
+            row[f"keep_{k:.2f}"] = round(
+                _score_with_fit(sid, cond, m, c, data_dir, derived_root), 4)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def residual_shape(pairs: list[tuple[str, str]] | None = None,
+                   data_dir: str | Path = "data/raw") -> pd.DataFrame:
+    """Skewness and excess kurtosis of each recording's OLS residuals.
+
+    Used to test whether the direction of change under the envelope fit tracks
+    how one-sided a recording's delay distribution is. It does not; see
+    notebooks/timing_diagnostic.ipynb section 9.
+    """
+    from scipy import stats as _st
+    if pairs is None:
+        scan = scan_all_recordings(data_dir)
+        pairs = list(zip(scan["subject"], scan["condition"]))
+    rows = []
+    for sid, cond in pairs:
+        tr, acq = _load_timing(sid, cond, data_dir)
+        m, c = fit_clock(tr, acq, "ols")
+        r = acq - (m * tr + c)
+        rows.append({"subject": sid, "condition": cond,
+                     "residual_skew": float(_st.skew(r)),
+                     "residual_kurtosis": float(_st.kurtosis(r))})
+    return pd.DataFrame(rows)
+
+
+def sweep_recording(subject_id: str, condition: str,
+                    data_dir: str | Path = "data/raw",
+                    derived_root: str | Path = "data/derived") -> dict:
+    """Score one recording under both clock fits and return a flat result dict.
+
+    This is the unit of work for the full-dataset sweep. Scoring uses that
+    subject's saved v3 model, which was trained on their control epochs under the
+    ORIGINAL alignment.
+
+    CONTROL RECORDINGS ARE CONFOUNDED BY THIS and are marked accordingly.
+    For a noise recording the model is fixed and only the test data moves, which
+    is a clean comparison. For a control recording, re-alignment moves the very
+    epochs the model was trained on, so a drop may reflect train/test mismatch
+    rather than lost signal. Any recovery claim should be made on non-control
+    recordings, or the model retrained on re-aligned control epochs first.
+    """
+    import time
+    t0 = time.time()
+    resid = recording_residuals(subject_id, condition, data_dir)
+    a = score_recording(subject_id, condition, "ols", data_dir, derived_root)
+    b = score_recording(subject_id, condition, "upper_envelope", data_dir, derived_root)
+    return {
+        "subject": subject_id,
+        "condition": condition,
+        "is_control": condition == "control",
+        "confounded": condition == "control",
+        "residual_std_ms": resid["residual_std_ms"],
+        "residual_p1_ms": resid["p1_ms"],
+        "flagged": resid["flagged"],
+        "auc_ols": a["auc"], "auc_envelope": b["auc"],
+        "auc_delta": b["auc"] - a["auc"],
+        "balacc_ols": a["balanced_accuracy"],
+        "balacc_envelope": b["balanced_accuracy"],
+        "balacc_delta": b["balanced_accuracy"] - a["balanced_accuracy"],
+        "n_epochs_ols": a["n_epochs"], "n_epochs_envelope": b["n_epochs"],
+        "elapsed_s": round(time.time() - t0, 2),
+    }
+
+
+def load_sweep(derived_root: str | Path = "data/derived") -> pd.DataFrame:
+    """Load every per-recording JSON written by analysis/run_timing_sweep.py."""
+    import json
+    d = Path(derived_root) / DERIVED_PIPELINE / "per_recording"
+    rows = []
+    for p in sorted(d.glob("*.json")):
+        try:
+            rows.append(json.loads(p.read_text()))
+        except Exception:
+            continue
+    return pd.DataFrame(rows)
+
 
 def build_cause_frame(data_dir: str | Path = "data/raw",
                       orders_csv: str | Path = "protocol/order_assignments/order_assignments.csv",
